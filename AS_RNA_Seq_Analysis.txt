@@ -1,0 +1,175 @@
+#bash script file for quality control of RNA-Seq reads
+#if output files are saved with ".gz" they will be automatically gzipped
+#file nomenclature is assumed to have "fq.gz" ending
+#must give path to trimmomatic jar (adding to path doesn't seem to work)
+#USAGE: job_trimmomatic.sh [sample name] [output directory] ["YES" if adapter trimming | leave blank] [name of file within ADAPTERS directory with sequence]
+
+BASE="/home/ntjohnson/data/local/trimmomatic/Trimmomatic-0.36"
+ADAPTERS="/home/ntjohnson/local/trimmomatic/Trimmomatic-0.36/adapters"
+SAMPLE="$1"
+OUTPUT_DIRECTORY="$2"
+QC_DIR="$2"
+READTYPE="$3"
+
+#explanation of parameters: paired end reads, 4 threads, phred33 score, min quality score of 20 checked at front (leading), end (trailing), and within (sliding window), minimum length of read kepted is 20
+
+java -jar $BASE/trimmomatic-0.36.jar PE -threads 4 -phred33 "$SAMPLE"_R1.fastq "$SAMPLE"_R2.fastq $OUTPUT_DIRECTORY/$SAMPLE.forward_paired.fq $OUTPUT_DIRECTORY/$SAMPLE.forward_unpaired.fq $OUTPUT_DIRECTORY/$SAMPLE.reverse_paired.fq $OUTPUT_DIRECTORY/$SAMPLE.reverse_unpaired.fq LEADING:20 TRAILING:20 SLIDINGWINDOW:4:20 MINLEN:20
+
+#move samples to output directory
+	pigz "$SAMPLE"_R1.fastq
+	pigz "$SAMPLE"_R2.fastq
+	
+	mv "$SAMPLE"_R1.fastq.gz ./samples_processed
+	mv "$SAMPLE"_R2.fastq.gz ./samples_processed
+
+#Modify Trim output for Tophat
+
+	cat $QC_DIR/$SAMPLE.forward_paired.fq $QC_DIR/$SAMPLE.forward_unpaired.fq > $QC_DIR/$SAMPLE.trimmed.R1.fq
+	cat $QC_DIR/$SAMPLE.reverse_paired.fq $QC_DIR/$SAMPLE.reverse_unpaired.fq > $QC_DIR/$SAMPLE.trimmed.R2.fq
+
+#Remove Trim output thats not needed
+	rm $QC_DIR/$SAMPLE.forward_paired.fq
+	rm $QC_DIR/$SAMPLE.forward_unpaired.fq
+	rm $QC_DIR/$SAMPLE.reverse_paired.fq
+	rm $QC_DIR/$SAMPLE.reverse_unpaired.fq
+
+
+
+#Designed to process an SRA file, preprocess it, then run the Tuxedo Suite for RNA-Seq on Linux Server
+#Written by:Nathan T.Johnson
+#06.24.2016 edited: 02.08.2016
+#Needs:
+#Trimmomatic, Tophat2
+#nathan bash script files in the appropiate directory locations [./RNA-Seq/QC & ./RNA-Seq/aligner & ./RNA-Seq/quantification]
+#NECESSARY [run "pathtonathanjobsfiles/RNA-Seq/job_mkdir_rna_seq_pipeline.sh"]= make directories called "tophat2", "aligned_fasta", "tophat2/tophat2_bam", done_bam_files, done_gene_expression, done_isoform_expression, done_transcript_files
+#Input: job_tuxedo_suite.sh [sample name] [SE | PE | SE-TI | PE-TI ] 
+#default parameters use 4 threads
+SAMPLE="$1"
+READ_STATUS="$2"
+ADAPTER="TODO"
+QC_DIR="./preprocessed"
+ALIGNER_DIR="tophat2"
+QUANTIFICATION_DIR="cufflinks2"
+
+#Assign GTF and Index
+T_INDEX="/home/ntjohnson/local/genomes_and_annotation/SCN_1.0/updated_genome_annotation/transcriptome_data/SCN"
+BOWTIEINDEX="/home/ntjohnson/data/data/Genome_Nematode_RNA_Seq/genome_annotation/bowtie2build/genome738sl.polished.mitoFixed.fixednames"
+ORIGINAL_GTF="/home/ntjohnson/data/data/Genome_Nematode_RNA_Seq/genome_annotation/unmasked.mergedall.738genome.gtf"
+
+echo "INPUT"
+echo "job_tuxedo_suite.sh $SAMPLE"
+
+#add bowtie2 and pigz to environment
+module add bowtie2
+module load pigz
+
+#decompress data
+pigz -d	"${1}_R1.fastq.gz"
+pigz -d "${1}_R2.fastq.gz"
+
+#QC
+
+./job_trimmomatic_nematode.sh  $SAMPLE $QC_DIR     
+
+echo trimmomatic is complete
+
+#Aligner
+
+	#tophat2 --b2-very-sensitive -p 8 --transcriptome-index="$T_INDEX" --output-dir "$QC_DIR/$ALIGNER_DIR/$SAMPLE" $BOWTIEINDEX $QC_DIR/"$SAMPLE".trimmed.R1.fq $QC_DIR/"$SAMPLE".trimmed.R2.fq
+
+	fq $QC_DIR/"$SAMPLE".trimmed.R2.fq
+
+	echo tophat2 is complete
+
+	#Move finished sample and submit gzip
+
+	mv $QC_DIR/$SAMPLE.trimmed.R1.fq $QC_DIR/finished
+	mv $QC_DIR/$SAMPLE.trimmed.R2.fq $QC_DIR/finished
+	pigz $QC_DIR/finished/$SAMPLE.trimmed.R1.fq
+	pigz $QC_DIR/finished/$SAMPLE.trimmed.R2.fq
+
+#Modify Tophat2 Output for Cufflinks
+
+mv $QC_DIR/$ALIGNER_DIR/$SAMPLE/accepted_hits.bam $QC_DIR/$ALIGNER_DIR/$SAMPLE/$SAMPLE.bam
+
+#Quantification
+
+cufflinks -p 8 -g $ORIGINAL_GTF -o $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/$SAMPLE $QC_DIR/$ALIGNER_DIR/$SAMPLE/$SAMPLE.bam
+
+echo cufflinks is complete
+
+#Move finished bam file to directory
+
+mv $QC_DIR/$ALIGNER_DIR/$SAMPLE/$SAMPLE.bam $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/done_bam_files
+
+#Move transcript file & gene & isoform expression to a directory
+
+mv $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/$SAMPLE/transcripts.gtf $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/$SAMPLE/$SAMPLE.gtf
+mv $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/$SAMPLE/genes.fpkm_tracking $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/$SAMPLE/$SAMPLE.genes.fpkm_tracking
+mv $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/$SAMPLE/isoforms.fpkm_tracking $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/$SAMPLE/$SAMPLE.isoforms.fpkm_tracking
+
+mv $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/$SAMPLE/$SAMPLE.gtf $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/done_transcript_files/
+mv $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/$SAMPLE/$SAMPLE.genes.fpkm_tracking $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/done_gene_expression/
+mv $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/$SAMPLE/$SAMPLE.isoforms.fpkm_tracking $QC_DIR/$ALIGNER_DIR/$QUANTIFICATION_DIR/done_isoform_expression/
+
+Pipeline:
+
+1) Trimmomatic (filter)
+2) Tophat2 (align)
+3) Stringtie (quantify and annotated)
+4) FPKM to TPM
+5) IsoformSwitchAnalyzeR (pattern recogniction
+
+
+two rounds of stringtie, 1 separately, merged gtf, quantify based on merged gtf
+
+for i in `cat list.txt`; do sbatch -o ${i}.STRINGTIE.o -e ${i}.STRINGTIE.e -J ${i}.STRINGTIE STRINGTIE.sbatch ${i}; done
+
+1st Round:
+stringtie done_bam_files/${1}.bam -v -p 8 -G SCN_stringtie.gtf -A ${1}.stringtie.A -o ${1}.stringtie.gtf -C ${1}.stringtie.C
+
+2nd Round:
+stringtie done_bam_files/${1}.bam -e -v -p 8 -G SCN_stringtie.gtf -A ${1}.stringtie.A -o ${1}.stringtie.gtf -C ${1}.stringtie.C
+
+
+
+#Note: For next SCN genome paper, redo alignment using the new gtf
+#Note: check into gffcompare to validate accuracy of new transcript assemblies
+#Note: Try out Ballgown for statistical analysis
+#!/bin/bash
+
+#bash script file for quality control of RNA-Seq reads
+#if output files are saved with ".gz" they will be automatically gzipped
+#file nomenclature is assumed to have "fq.gz" ending
+#must give path to trimmomatic jar (adding to path doesn't seem to work)
+#USAGE: job_trimmomatic.sh [sample name] [output directory] ["YES" if adapter trimming | leave blank] [name of file within ADAPTERS directory with sequence]
+
+BASE="/home/ntjohnson/data/local/trimmomatic/Trimmomatic-0.36"
+ADAPTERS="/home/ntjohnson/local/trimmomatic/Trimmomatic-0.36/adapters"
+SAMPLE="$1"
+OUTPUT_DIRECTORY="$2"
+QC_DIR="$2"
+READTYPE="$3"
+
+#explanation of parameters: paired end reads, 4 threads, phred33 score, min quality score of 20 checked at front (leading), end (trailing), and within (sliding window), minimum length of read kepted is 20
+
+java -jar $BASE/trimmomatic-0.36.jar PE -threads 4 -phred33 "$SAMPLE"_R1.fastq "$SAMPLE"_R2.fastq $OUTPUT_DIRECTORY/$SAMPLE.forward_paired.fq $OUTPUT_DIRECTORY/$SAMPLE.forward_unpaired.fq $OUTPUT_DIRECTORY/$SAMPLE.reverse_paired.fq $OUTPUT_DIRECTORY/$SAMPLE.reverse_unpaired.fq LEADING:20 TRAILING:20 SLIDINGWINDOW:4:20 MINLEN:20
+
+#move samples to output directory
+	pigz "$SAMPLE"_R1.fastq
+	pigz "$SAMPLE"_R2.fastq
+	
+	mv "$SAMPLE"_R1.fastq.gz ./samples_processed
+	mv "$SAMPLE"_R2.fastq.gz ./samples_processed
+
+#Modify Trim output for Tophat
+
+	cat $QC_DIR/$SAMPLE.forward_paired.fq $QC_DIR/$SAMPLE.forward_unpaired.fq > $QC_DIR/$SAMPLE.trimmed.R1.fq
+	cat $QC_DIR/$SAMPLE.reverse_paired.fq $QC_DIR/$SAMPLE.reverse_unpaired.fq > $QC_DIR/$SAMPLE.trimmed.R2.fq
+
+#Remove Trim output thats not needed
+	rm $QC_DIR/$SAMPLE.forward_paired.fq
+	rm $QC_DIR/$SAMPLE.forward_unpaired.fq
+	rm $QC_DIR/$SAMPLE.reverse_paired.fq
+	rm $QC_DIR/$SAMPLE.reverse_unpaired.fq
+
